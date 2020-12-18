@@ -1,0 +1,77 @@
+---
+# run like this: ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i 1.2.3.4, test.yml
+
+- name: Pivot root to ramdisk
+  hosts: all
+  vars:
+    ansible_user: root
+  gather_facts: false
+  tasks:
+    - name: Create directories
+      file:
+        path: /ramdisk
+        state: directory
+
+    - name: Mount
+      command: mount -t tmpfs -o size=100% none /ramdisk
+
+    - name: Create directories
+      file:
+        path: "/ramdisk/{{ item }}"
+        state: directory
+      loop:
+        - proc
+        - sys
+        - dev
+        - oldroot
+
+    - name: Run script
+      shell: |
+        set -e
+        cp -ax / /ramdisk
+        mount --make-rprivate /
+        set +e
+        for i in dev proc sys run; do mount --move /$i /ramdisk/$i; done
+        set -e
+        pivot_root /ramdisk /ramdisk/oldroot
+        swapoff -a
+
+    - name: Install psmisc
+      package:
+        name: psmisc
+
+    - name: Restart daemons
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+        daemon_reexec: true
+      loop:
+        - cron
+        - dbus
+        - rsyslog
+        - sshd
+        - systemd-journald
+        - systemd-logind
+        - systemd-timesyncd
+        - systemd-udevd
+
+    - name: Kill oldroot
+      shell: "sleep 2 && fuser -km /oldroot"
+      async: 1
+      poll: 0
+
+    - name: Sleep
+      pause:
+        seconds: 5
+
+    - name: Reset connection
+      meta: reset_connection
+
+    - name: Unmount oldroot
+      mount:
+        path: /oldroot
+        state: unmounted
+        fstab: /tmp/fstab
+
+    - name: Make / shared
+      command: mount --make-rshared /
